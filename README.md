@@ -14,9 +14,9 @@ then run the command line app. It shows messages and allows you to enter new
 posts. Hit return after your last message and all will be sent in bulk. Note
 that the password will need to be obfuscated, for that simply run `python3
 Obfuscator.py` and enter it. Note that the passphrase is *not* encrypted, it is
-merely obfuscated, i.e., it is trivial retrieve! The idea is that if you
-accidentally `cat` your JSON file, it's not blantly obvious what the passphrase
-is.
+merely obfuscated, i.e., it is trivial to get the password from that obfuscated
+string. The idea is that if you accidentally `cat` your JSON file, it's not
+blantly obvious what the passphrase is.
 
 ## License
 GNU GPL-3.
