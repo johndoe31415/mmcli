@@ -1,0 +1,163 @@
+#!/usr/bin/python3
+#	mmcli - Minimalist Mattermost command line client
+#	Copyright (C) 2020-2020 Johannes Bauer
+#
+#	This file is part of mmcli.
+#
+#	mmcli is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	mmcli is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with mmcli; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import json
+import time
+from Mattermost import Mattermost
+from FriendlyArgumentParser import FriendlyArgumentParser
+from Obfuscator import Obfuscator
+
+parser = FriendlyArgumentParser(description = "Command line Mattermost client.")
+parser.add_argument("-c", "--config", metavar = "filename", type = str, default = "config.json", help = "Configuration file to read in. Defaults to %(default)s.")
+parser.add_argument("-s", "--state", metavar = "filename", type = str, default = "state.json", help = "State file to use. Defaults to %(default)s.")
+args = parser.parse_args(sys.argv[1:])
+
+class MMCLI():
+	def __init__(self, args):
+		self._args = args
+
+		with open(self._args.config) as f:
+			self._config = json.load(f)
+		self._config["password"] = Obfuscator.deobfuscate(self._config["password"])
+
+		try:
+			with open(self._args.state) as f:
+				self._state = json.load(f)
+		except FileNotFoundError:
+			self._state = { }
+
+		self._mm = Mattermost(self._config["endpoint"])
+		self._login()
+		self._get_teams()
+		self._get_channels()
+		self._active_channel = self._find_channel(self._config["team"], self._config["channel"])
+
+	def _write_state(self):
+		with open(self._args.state, "w") as f:
+			json.dump(self._state, f, indent = 4, sort_keys = True)
+
+	def _login(self):
+		if "login_user" not in self._state:
+			self._state["login_user"] = self._mm.login(self._config["username"], self._config["password"])
+			self._write_state()
+		self._mm.set_login_token(self._state["login_user"]["token"])
+
+	def _get_teams(self):
+		if "teams" not in self._state:
+			self._state["teams"] = self._mm.get_teams(userid = self._state["login_user"]["id"])
+			self._write_state()
+
+	def _get_channels(self):
+		if "channels" not in self._state:
+			self._state["channels"] = { }
+			for team in self._state["teams"]:
+				teamid = team["id"]
+				channels = self._mm.get_channels(teamid)
+				self._state["channels"][teamid] = channels
+			self._write_state()
+
+	def _find_team_by_name(self, team_name):
+		for team in self._state["teams"]:
+			if team["display_name"] == team_name:
+				return team["id"]
+		raise Exception("No such team: %s" % (team_name))
+
+	def _find_channel(self, team_name, channel_name):
+		teamid = self._find_team_by_name(team_name)
+		channels = self._state["channels"][teamid]
+		for channel in channels:
+			if channel["display_name"] == channel_name:
+				return channel["id"]
+		raise Exception("No such channel: %s" % (channel_name))
+
+	def _update_user(self, userid):
+		if "users" not in self._state:
+			self._state["users"] = { }
+		if userid not in self._state["users"]:
+			self._state["users"][userid] = self._mm.get_user(userid)
+			self._write_state()
+
+	def get_new_messages(self):
+		if "msgs" not in self._state:
+			self._state["msgs"] = { }
+		if self._active_channel not in self._state["msgs"]:
+			self._state["msgs"][self._active_channel] = [ ]
+
+		if len(self._state["msgs"][self._active_channel]) == 0:
+			# Don't have messages yet, fetch last day
+			after_postid = None
+		else:
+			after_postid = self._state["msgs"][self._active_channel][-1]["id"]
+		new_msgs = self._mm.get_messages(self._active_channel, after_postid = after_postid)
+		print("%d new messages." % (len(new_msgs)))
+		if len(new_msgs) > 0:
+			self._state["msgs"][self._active_channel] += new_msgs
+			self._write_state()
+			for msg in new_msgs:
+				self._update_user(msg["user_id"])
+
+	def _print_message(self, msg):
+		user = self._state["users"][msg["user_id"]]
+		username = user["username"]
+		print("%s: %s" % (username, msg["message"]))
+
+	def print_last_messages(self):
+		for message in self._state["msgs"][self._active_channel][-50:]:
+			self._print_message(message)
+
+	def add_outbox_queue(self, text):
+		if "outbox" not in self._state:
+			self._state["outbox"] = [ ]
+		self._state["outbox"].append({
+			"text": text,
+			"channel": self._active_channel,
+			"written": time.time(),
+		})
+		self._write_state()
+
+	def flush_outbox(self):
+		if "outbox" not in self._state:
+			return
+		while len(self._state["outbox"]) > 0:
+			send_msg = self._state["outbox"].pop(0)
+			result = self._mm.post_message(send_msg["channel"], send_msg["text"])
+			if result.get("message") == send_msg["text"]:
+				# Message was successfully sent
+				self._write_state()
+			else:
+				# Message was not sent.
+				self._state["outbox"].insert(send_msg, 0)
+				raise Exception("Message not sent: %s (%s)" % (send_msg, result))
+
+mmcli = MMCLI(args)
+mmcli.get_new_messages()
+mmcli.print_last_messages()
+
+while True:
+	msg = input("Write: ")
+	if msg == "":
+		break
+	else:
+		mmcli.add_outbox_queue(msg)
+mmcli.flush_outbox()
+

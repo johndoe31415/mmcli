@@ -1,0 +1,5 @@
+config.json
+state.json
+__pycache__
+.*.swp
+mattermost-openapi-v4.yaml

@@ -1,0 +1,7 @@
+{
+	"endpoint":		"https://my.mattermost.server.com/",
+	"username":		"joe",
+	"password":		"VBZ+kB+LEVl7oO+ifA==",
+	"team":			"Best People",
+	"channel":		"Fun Channel"
+}
